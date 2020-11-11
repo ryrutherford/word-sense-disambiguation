@@ -1,8 +1,14 @@
 import nltk
-from nltk.corpus import stopwords, wordnet as wn
+from nltk.corpus import stopwords, semcor, wordnet as wn
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 from nltk.tokenize import word_tokenize
 import re
+import json
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.model_selection import GridSearchCV
+
+#dictionary used in methods for supervised wsd
+supervised_wsd_lemmas_and_pos = {"say": "v", "make": "v", "know": "v", "take": "v", "use": "v", "find": "v", "man": "n", "time": "n", "year": "n", "day": "n", "thing": "n", "way": "n"}
 
 #helper function to apply the porter stemmer to sentences
 def stem(tokenized_sentence):
@@ -127,6 +133,107 @@ def lesk(instances, algorithm, pre_processing=None, sw=False, punctuation_counts
         elif(algorithm == "most_frequent_wsd"):
             most_frequent_wsd(wsd_result, wsd, context, pre_processing, sw, punctuation_counts)          
     return wsd_result
+
+"""
+change method to account for pos
+"""
+#method to find the num_words most common lemmas in the semcor corpus
+def find_most_common_words_semcor(num_words):
+    freq_dict = {}
+    #tagged_sents contains a list of sentences (lists) which are broken down into chunks (lists)
+    #chunks contain semantic information
+    tagged_sents = semcor.tagged_sents(tag="both")
+    for sentence in tagged_sents:
+        for chunk in sentence:
+            if(isinstance(chunk, nltk.tree.Tree)):
+                """
+                if(isinstance(chunk[0], nltk.tree.Tree)):
+                    if(chunk[0].label() == "NE"):
+                        continue
+                    else:
+                        print(chunk[0])
+                else:
+                """
+                if(isinstance(chunk.label(), nltk.corpus.reader.wordnet.Lemma)):
+                    #lemma has form: x.pp.d.y where x.pp.d will map to a synset for the word y
+                    lemma = chunk.label()
+                    #extract the y part from the lemma
+                    try:
+                        #some are not stored as lemmas so the lemma.name() call will fail and we'll need to do a regex operation to extract the word
+                        lemma_name = lemma.name()
+                    except:
+                        lemma_name = re.search(r"[a-zA-Z_\-]+", lemma)
+                    finally:
+                        #get the pos
+                        pos = wordnet_pos(chunk[0].label())
+                        lemma_name = f"{lemma_name}, {pos}"
+                        #update frequency count for lemma_name
+                        freq_dict[lemma_name] = 1 if lemma_name not in freq_dict else freq_dict[lemma_name] + 1
+    
+    #sorting the frequency dict and outputting the most frequent
+    freq_dict = {k: v for k, v in sorted(freq_dict.items(), key=lambda item: item[1], reverse=True)}
+    index = 0
+    with open("most_frequent_words.txt", "w") as fp:
+        for key, val in freq_dict.items():
+            if(index == num_words):
+                break
+            index += 1
+            #print((key, val))
+            fp.write(f"Word: {key}, Count: {val}\n")
+
+#method to get baseline stats if we used the most frequent sense to disambiguate the words passed as a parameter
+def get_most_frequent_sense_accuracy(words=supervised_wsd_lemmas_and_pos):
+    all_freq = {}
+    most_common_freq = {}
+
+    tagged_sents = semcor.tagged_sents(tag="sem")
+    for sentence in tagged_sents:
+        for chunk in sentence:
+            if(isinstance(chunk, nltk.tree.Tree)):
+                if(isinstance(chunk[0], nltk.tree.Tree)):
+                    continue
+                else:
+                    #lemma has form: x.pp.d.y where x.pp.d will map to a synset for the word y
+                    lemma = chunk.label()
+                    #extract the y part from the lemma
+                    try:
+                        #some are not stored as lemmas so the lemma.name() call will fail and we'll need to do a regex operation to extract the word
+                        lemma_name = lemma.name()
+                        sense = lemma.synset().name()
+                    except:
+                        lemma_name = re.search(r"[a-zA-Z_\-]+", lemma)
+                        sense = lemma
+                    finally:
+                        if(lemma_name in words):
+                            most_frequent_sense = wn.synsets(lemma_name, pos=words[lemma_name])[0].name()
+                            if(sense == most_frequent_sense):
+                                most_common_freq[lemma_name] = 1 if lemma_name not in most_common_freq else most_common_freq[lemma_name] + 1
+                            else:
+                                if(lemma_name not in most_common_freq):
+                                    most_common_freq[lemma_name] = 0
+                            all_freq[lemma_name] = 1 if lemma_name not in all_freq else all_freq[lemma_name] + 1
+    accuracy_dict = {}
+    for key in all_freq.keys():
+        accuracy_dict[key] = most_common_freq[key]/all_freq[key]
+    
+    write_dict = {"accuracy": accuracy_dict, "total_frequency": all_freq, "most_common_freq": most_common_freq}
+
+    with open("baseline_accuracy_supervisedwsd.json", "w") as fp:
+        json.dump(write_dict, fp, indent=2)
+                                                    
+    
+def supervised_wsd(words=supervised_wsd_lemmas_and_pos):
+    for lemma in words.keys():
+        pass
+        #extract features and labels from semcor corpus
+
+        #split data into training and test set
+
+        #train mnb using gridsearchcv
+
+        #predict on test set
+
+        #output results to json file
 
 #function that will calculate the accuracy based on the predicted synsets
 def get_accuracy(predicted_sysnset, actual_lemmasense):
