@@ -3,7 +3,7 @@
 '''
 import xml.etree.cElementTree as ET
 import codecs
-from wsd import run_algorithms, get_most_frequent_sense_accuracy, find_most_common_words_semcor
+from wsd import run_algorithms, supervised_wsd#, get_most_frequent_sense_accuracy, find_most_common_words_semcor
 from nltk.corpus import stopwords
 import re
 
@@ -110,4 +110,5 @@ if __name__ == '__main__':
     #run_algorithms(test_instances, test_key, algorithms)
 
     #find_most_common_words_semcor(100)
-    get_most_frequent_sense_accuracy()
+    #get_most_frequent_sense_accuracy()
+    supervised_wsd()

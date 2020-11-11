@@ -1,11 +1,15 @@
+import re
+import json
 import nltk
 from nltk.corpus import stopwords, semcor, wordnet as wn
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 from nltk.tokenize import word_tokenize
-import re
-import json
 from sklearn.naive_bayes import MultinomialNB
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score
 
 #dictionary used in methods for supervised wsd
 supervised_wsd_lemmas_and_pos = {"say": "v", "make": "v", "know": "v", "take": "v", "use": "v", "find": "v", "man": "n", "time": "n", "year": "n", "day": "n", "thing": "n", "way": "n"}
@@ -220,20 +224,124 @@ def get_most_frequent_sense_accuracy(words=supervised_wsd_lemmas_and_pos):
 
     with open("baseline_accuracy_supervisedwsd.json", "w") as fp:
         json.dump(write_dict, fp, indent=2)
-                                                    
+
+#helper method to find context words "index" locations away from the word we're looking for
+#the direction tells us whether to look up from the index or down if the first context word found is not valid
+#a context word is not valid if it's punctuation (it's tree label is None)
+def find_context_word(index, sentence, direction):
+    context_word = "_" if index < 0 or index >= len(sentence) else sentence[index]
     
+    #if the features label is None then the feature is punctuation which we don't care for
+    additional_index = 1
+    while(context_word != "_" and context_word.label() is None):
+        if(direction == "-"):
+            index = index - additional_index
+            context_word = "_" if index < 0 else sentence[index]
+        else:
+            index = index + additional_index
+            context_word = "_" if index >= len(sentence) else sentence[index]
+        additional_index += 1
+    
+    if(context_word == "_"):
+        return context_word, index
+
+    try:
+        lemma = context_word.label()
+        #if the label is a lemma then we will use the lemma name as the context otherwise we'll use the value of the tree
+        if(isinstance(lemma, nltk.corpus.reader.wordnet.Lemma)):
+            context_word = lemma.name()
+        else:
+            try:
+                #if this fails then that means that the label had the lemma format but was not a lemma object
+                context_word = context_word[0].lower()
+            except:
+                #we get the lemma from the string
+                context_word = re.search(r"[a-zA-Z_\-]+", lemma).group(0)
+    except:
+        print(context_word)
+    
+    return context_word.lower(), index
+                                                    
+def extract_features_and_labels_by_lemma(lemma_of_interest):
+    features = []
+    labels = []
+    tagged_sents = semcor.tagged_sents(tag="both")
+    for sentence in tagged_sents:
+        index = 0
+        for chunk in sentence:
+            if(isinstance(chunk, nltk.tree.Tree)):
+                if(isinstance(chunk.label(), nltk.corpus.reader.wordnet.Lemma)):
+                    #lemma has form: x.pp.d.y where x.pp.d will map to a synset for the word y
+                    lemma = chunk.label()
+                    #extract the y part from the lemma
+                    try:
+                        #some are not stored as lemmas so the lemma.name() call will fail and we'll need to do a regex operation to extract the word
+                        lemma_name = lemma.name()
+                    except:
+                        lemma_name = re.search(r"[a-zA-Z_\-]+", lemma)
+                    finally:
+                        if(lemma_name == lemma_of_interest):
+                            #extract the features w-2, w-1, w+1, w+2, (w-2, w-1), (w-1, w+1), (w+1, w+2)
+                            #where w is the index of the current word in the sentence
+                            one_back, ob_index = find_context_word(index - 1, sentence, "-")
+                            two_back, _ = find_context_word(ob_index - 1, sentence, "-")
+                            one_forward, of_index = find_context_word(index + 1, sentence, "+")
+                            two_forward, _ = find_context_word(of_index + 1, sentence, "+")
+                            two_back_one_back = two_back + "_" + one_back
+                            one_back_one_forward = one_back + "_" + one_forward
+                            one_forward_two_forward = one_forward + "_" + two_forward
+
+                            new_feature = {"w-2": two_back, "w-1": one_back, "w+1": one_forward, "w+2": two_forward, "w-2, w-1": two_back_one_back, "w-1, w+1": one_back_one_forward, "w+1, w+2": one_forward_two_forward}
+                            new_label = lemma.synset().name()
+
+                            features.append(new_feature)
+                            labels.append(new_label)
+                            
+            index += 1
+    return features, labels
+
 def supervised_wsd(words=supervised_wsd_lemmas_and_pos):
-    for lemma in words.keys():
-        pass
+    stats_dict = {}
+    most_frequent_stats_dict = {}
+    for lemma, pos in words.items():
+        
         #extract features and labels from semcor corpus
+        features, labels = extract_features_and_labels_by_lemma(lemma)
+        
+        features = Pipeline([("dict", DictVectorizer()), ("tfid", TfidfTransformer())]).fit_transform(features).toarray()
 
         #split data into training and test set
+        context_train, context_test, senses_train, senses_test = train_test_split(features, labels, test_size=0.3, random_state=42)
 
         #train mnb using gridsearchcv
+        #parameters to be tested in GridSearchCV
+        #parameters were chosen based off research on stackoverflow (and out of interest of saving computation time)
+        parameters = {
+                'alpha': [1e-1, 1e-3, 1],
+                'fit_prior': [True, False]
+            }
+        gscv = GridSearchCV(MultinomialNB(), parameters, n_jobs=-1, verbose=10 )
+        gscv = gscv.fit(context_train, senses_train)
 
         #predict on test set
+        predicted_senses = gscv.predict(context_test)
 
-        #output results to json file
+        accuracy = accuracy_score(senses_test, predicted_senses)
+        stats_dict[lemma] = accuracy
+
+        #getting the baseline accuracy for if we predicted the most frequent sense
+        predicted_senses_most_frequent = []
+        most_frequent_sense = wn.synsets(lemma, pos=pos)[0].name()
+        for _ in range(len(predicted_senses)):
+            predicted_senses_most_frequent.append(most_frequent_sense)
+
+        accuracy = accuracy_score(senses_test, predicted_senses_most_frequent)
+        most_frequent_stats_dict[lemma] = accuracy
+
+    output_dict = {"supervised_wsd_accuracy": stats_dict, "most_frequent_sense_wsd_accuracy": most_frequent_stats_dict}
+    #output results to json file
+    with open("supervised_wsd_accuracies.json", "w") as fp:
+        json.dump(output_dict, fp, indent=2)
 
 #function that will calculate the accuracy based on the predicted synsets
 def get_accuracy(predicted_sysnset, actual_lemmasense):
