@@ -3,7 +3,7 @@
 '''
 import xml.etree.cElementTree as ET
 import codecs
-from wsd import run_algorithms, supervised_wsd#, get_most_frequent_sense_accuracy, find_most_common_words_semcor
+from wsd import run_algorithms
 from nltk.corpus import stopwords
 import re
 
@@ -67,33 +67,6 @@ def to_ascii(s):
     # remove all non-ascii characters
     return codecs.encode(s, 'ascii', 'ignore')
 
-"""
-def find_most_common_words(dev_key, test_key, num_words):
-    freq_dict = {}
-    #getting the most frequent terms from the dev_key
-    for value in dev_key.values():
-        for lemma in value:
-            match_obj = re.search(r"[a-zA-Z0-9_\-]+", lemma)
-            lemma = match_obj.group(0)
-            freq_dict[lemma] = 1 if lemma not in freq_dict else freq_dict[lemma] + 1
-
-    #getting the most frequent terms from the test_key
-    for value in test_key.values():
-        for lemma in value:
-            match_obj = re.search(r"[a-zA-Z0-9_\-]+", lemma)
-            lemma = match_obj.group(0)
-            freq_dict[lemma] = 1 if lemma not in freq_dict else freq_dict[lemma] + 1
-
-    #sorting the dictionary
-    freq_dict = {k: v for k, v in sorted(freq_dict.items(), key=lambda item: item[1], reverse=True)}
-    index = 0
-    for key, val in freq_dict.items():
-        if(index == num_words):
-            break
-        index += 1
-        print((key, val))
-"""
-
 if __name__ == '__main__':
     data_f = 'multilingual-all-words.en.xml'
     key_f = 'wordnet.en.key'
@@ -104,11 +77,6 @@ if __name__ == '__main__':
     dev_instances = {k:v for (k,v) in dev_instances.items() if k in dev_key}
     test_instances = {k:v for (k,v) in test_instances.items() if k in test_key}
 
-    #find_most_common_words(dev_key, test_key, 15)
-
-    #algorithms = ["wn_lesk"] #["wn_lesk", "most_frequent_wsd"]
-    #run_algorithms(test_instances, test_key, algorithms)
-
-    #find_most_common_words_semcor(100)
-    #get_most_frequent_sense_accuracy()
-    supervised_wsd()
+    #modify this list to choose which algorithms to run
+    algorithms =  ["MNB", "DT", "wn_lesk", "most_frequent_wsd"]
+    run_algorithms(test_instances, test_key, algorithms)

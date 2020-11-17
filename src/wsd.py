@@ -1,3 +1,15 @@
+"""
+this file contains the code to run 4 different wsd algorithms
+ - 2 implementations of Lesk's algorithm
+ - 2 supervised approaches to WSD (one using MNB and one using bootstrapping and Decision Trees)
+ - The implementations for Lesk's algorithm uses the  SemEval 2013 Shared Task #12 dataset
+ - The implementaions for the supervised models use SemCor
+ - Lesk's algorithm attempts to disambiguate each word
+ - The supervised classifiers only attempt to disambiguate 1 word (I trained 12 classifiers to disambiguate 12 words)
+
+to run the algorithms run loader.py
+"""
+
 import re
 import json
 import nltk
@@ -8,8 +20,10 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.feature_extraction.text import TfidfTransformer
+from sklearn.ensemble import BaggingClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score
+from sklearn.tree import DecisionTreeClassifier
 
 #dictionary used in methods for supervised wsd
 supervised_wsd_lemmas_and_pos = {"say": "v", "make": "v", "know": "v", "take": "v", "use": "v", "find": "v", "man": "n", "time": "n", "year": "n", "day": "n", "thing": "n", "way": "n"}
@@ -138,9 +152,6 @@ def lesk(instances, algorithm, pre_processing=None, sw=False, punctuation_counts
             most_frequent_wsd(wsd_result, wsd, context, pre_processing, sw, punctuation_counts)          
     return wsd_result
 
-"""
-change method to account for pos
-"""
 #method to find the num_words most common lemmas in the semcor corpus
 def find_most_common_words_semcor(num_words):
     freq_dict = {}
@@ -150,14 +161,6 @@ def find_most_common_words_semcor(num_words):
     for sentence in tagged_sents:
         for chunk in sentence:
             if(isinstance(chunk, nltk.tree.Tree)):
-                """
-                if(isinstance(chunk[0], nltk.tree.Tree)):
-                    if(chunk[0].label() == "NE"):
-                        continue
-                    else:
-                        print(chunk[0])
-                else:
-                """
                 if(isinstance(chunk.label(), nltk.corpus.reader.wordnet.Lemma)):
                     #lemma has form: x.pp.d.y where x.pp.d will map to a synset for the word y
                     lemma = chunk.label()
@@ -261,7 +264,8 @@ def find_context_word(index, sentence, direction):
         print(context_word)
     
     return context_word.lower(), index
-                                                    
+
+#helper method used by supervised learning models to extract features and labels for a given lemma in the SemCor corpus                                                   
 def extract_features_and_labels_by_lemma(lemma_of_interest):
     features = []
     labels = []
@@ -300,7 +304,8 @@ def extract_features_and_labels_by_lemma(lemma_of_interest):
             index += 1
     return features, labels
 
-def supervised_wsd(words=supervised_wsd_lemmas_and_pos):
+#method that will train and predict for the supervised learning models. bootstrap=False runs MNB, bootstrap=True runs DT
+def supervised_wsd(words=supervised_wsd_lemmas_and_pos, bootstrap=False):
     stats_dict = {}
     most_frequent_stats_dict = {}
     for lemma, pos in words.items():
@@ -308,24 +313,36 @@ def supervised_wsd(words=supervised_wsd_lemmas_and_pos):
         #extract features and labels from semcor corpus
         features, labels = extract_features_and_labels_by_lemma(lemma)
         
+        #we use a pipeline to vectorize the features and then do a tfidf transformation on them
         features = Pipeline([("dict", DictVectorizer()), ("tfid", TfidfTransformer())]).fit_transform(features).toarray()
 
         #split data into training and test set
         context_train, context_test, senses_train, senses_test = train_test_split(features, labels, test_size=0.3, random_state=42)
 
-        #train mnb using gridsearchcv
-        #parameters to be tested in GridSearchCV
-        #parameters were chosen based off research on stackoverflow (and out of interest of saving computation time)
-        parameters = {
-                'alpha': [1e-1, 1e-3, 1],
-                'fit_prior': [True, False]
+        #if bootstrap is false then we run basic supervised wsd with Multinomial Naive Bayes
+        if(bootstrap == False):
+
+            #train mnb using gridsearchcv
+            #parameters to be tested in GridSearchCV
+            #parameters were chosen based off research on stackoverflow (and out of interest of saving computation time)
+            parameters = {
+                    'alpha': [1e-1, 1e-3, 1],
+                    'fit_prior': [True, False]
+                }
+            gscv = GridSearchCV(MultinomialNB(), parameters, n_jobs=-1, verbose=10 )
+            gscv = gscv.fit(context_train, senses_train)
+        else:
+            parameters = {
+                'base_estimator__max_depth' : [1, 2, 3, 4, 5],
+                'max_samples' : [0.05, 0.1, 0.2, 0.5]
             }
-        gscv = GridSearchCV(MultinomialNB(), parameters, n_jobs=-1, verbose=10 )
-        gscv = gscv.fit(context_train, senses_train)
+            
+            #BaggingClassifier with the default base_estimator will use a decisiont tree
+            gscv = GridSearchCV(BaggingClassifier(base_estimator=DecisionTreeClassifier(), n_estimators=50, random_state=42), parameters, n_jobs=-1, verbose=10)
+            gscv = gscv.fit(context_train, senses_train)
 
         #predict on test set
         predicted_senses = gscv.predict(context_test)
-
         accuracy = accuracy_score(senses_test, predicted_senses)
         stats_dict[lemma] = accuracy
 
@@ -339,15 +356,23 @@ def supervised_wsd(words=supervised_wsd_lemmas_and_pos):
         most_frequent_stats_dict[lemma] = accuracy
 
     output_dict = {"supervised_wsd_accuracy": stats_dict, "most_frequent_sense_wsd_accuracy": most_frequent_stats_dict}
-    #output results to json file
-    with open("supervised_wsd_accuracies.json", "w") as fp:
-        json.dump(output_dict, fp, indent=2)
+
+    if(bootstrap == False):
+        #output results to json file
+        with open("supervised_wsd_accuracies.json", "w") as fp:
+            json.dump(output_dict, fp, indent=2)
+    else:
+        #output results to json file
+        with open("bootstrap_supervised_wsd_accuracies.json", "w") as fp:
+            json.dump(output_dict, fp, indent=2)
 
 #function that will calculate the accuracy based on the predicted synsets
 def get_accuracy(predicted_sysnset, actual_lemmasense):
     total_predicted = 0
     total_correct = 0
     num_exceptions = 0
+    incorrect_predictions = {}
+    correct_predictions = {}
     for wn_id, synset in predicted_sysnset.items():
         lemmasense_key = actual_lemmasense[wn_id]
         #for each correct lemmasense key for this term we extract the corresponding synset
@@ -359,11 +384,27 @@ def get_accuracy(predicted_sysnset, actual_lemmasense):
                 num_exceptions += 1
                 print(f"WordNet failed to get synset from key: {key}. Number of exceptions: {num_exceptions}")
                 continue
+            
+            both_synsets = f"{str(synset_from_lsk)}, {str(synset)}"
             if(synset_from_lsk == synset):
                 total_correct += 1
+                correct_predictions[both_synsets] = 1 if both_synsets not in correct_predictions else correct_predictions[both_synsets] + 1
                 break
+            else:
+                incorrect_predictions[both_synsets] = 1 if both_synsets not in incorrect_predictions else incorrect_predictions[both_synsets] + 1
         total_predicted += 1
     accuracy = round((total_correct/total_predicted)*100, 2)
+
+    print("Most common incorrect predictions and their actual value")
+    for key, value in incorrect_predictions.items():
+        if(value > 5):
+            print(f"key: {key}, value: {value}")
+    print()
+    print("Most common correct predictions and their actual value")
+    for key, value in correct_predictions.items():
+        if(value > 5):
+            print(f"key: {key}, value: {value}")
+    print()
     return accuracy
 
 def run_algorithms(instances, keys, algorithms):
@@ -373,9 +414,9 @@ def run_algorithms(instances, keys, algorithms):
         """
         if(algorithm == "most_frequent_wsd"):
             with open("most_frequent_wsd.txt", "w") as fp:
-                punctuation_counts_possibilities = [True, False]
-                stopword_possibilities = [True, False]
-                pre_processing_possibilities = [None, "lemmatize", "stem"]
+                punctuation_counts_possibilities = [True]
+                stopword_possibilities = [False]
+                pre_processing_possibilities = ["lemmatize"]
                 for punctuation_count in punctuation_counts_possibilities:
                     for sw in stopword_possibilities:
                         for pp in pre_processing_possibilities:
@@ -392,3 +433,9 @@ def run_algorithms(instances, keys, algorithms):
                 wn_lesk_result = lesk(instances, algorithm)
                 accuracy = get_accuracy(wn_lesk_result, keys)
                 fp.write(f"Accuracy for wn_lesk: {accuracy}\n\n")
+        #multinomial naive bayes
+        elif(algorithm == "MNB"):
+            supervised_wsd()
+        #decision tree with bootstrapping
+        elif(algorithm == "DT"):
+            supervised_wsd(bootstrap=True)
