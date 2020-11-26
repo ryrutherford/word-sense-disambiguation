@@ -1,4 +1,6 @@
-*.pdf
+COMP 550 - PA2.pdf
+a2.pdf
+*.zip
 *.txt
 __pycache__/
 .vscode/

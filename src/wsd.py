@@ -70,10 +70,11 @@ def lemmatize(tokenized_sentence):
 #by default we don't ignore stopwords
 def compute_overlap(signature, context, stop_words=[], punctuation_counts=True):
     overlap = 0
+    
     #for each word in the signature we check if the word is in the context (and not a stopword)
     #if it is then we increment the overlap count
     for word in signature:
-        #the re.match checks if the "word" is a non alpha numeric character (we don't count these as overlaps)
+        #the re.match checks if the "word" is a non alpha numeric character
         if word in context and word not in stop_words and (punctuation_counts or re.match(r"\W", word) == None):
             overlap += 1
             #removing the word from the context so we don't count it again
@@ -81,7 +82,7 @@ def compute_overlap(signature, context, stop_words=[], punctuation_counts=True):
     return overlap
 
 #function that computes the most_frequent_wsd algorithm
-def most_frequent_wsd(wsd_result, wsd, context, pre_processing=None, sw=False, punctuation_counts=True):
+def most_frequent_wsd(wsd_result, wsd, context, pre_processing=None, sw=False, punctuation_counts=True, co=False):
     #converting the lemma (word to be disambiguated) to a string
     #at this point we are just replacing _ with spaces
     lemma = wsd.lemma.decode("utf-8").lower().replace("_", " ")
@@ -106,23 +107,25 @@ def most_frequent_wsd(wsd_result, wsd, context, pre_processing=None, sw=False, p
         lemma = lemma.replace(" ", "_")
         senses = wn.synsets(lemma)
         best_sense = senses[0]
-    max_overlap = 0
-    for sense in senses:
-        #tokenizing the signature
-        signature = word_tokenize(sense.definition().lower())
 
-        #lemmatizing the signature
-        if(pre_processing == "lemmatize"):
-            signature = lemmatize(signature)
-        elif(pre_processing == "stem"):
-            signature = stem(signature)
+    if(co == True):
+        max_overlap = 0
+        for sense in senses:
+            #tokenizing the signature
+            signature = word_tokenize(sense.definition().lower())
 
-        #computing the overlap between the signature and the context
-        overlap = compute_overlap(signature, context, stop_words, punctuation_counts)
-        #if the new overlap is greater than max overlap then we use this sense as our best sense
-        if(overlap > max_overlap):
-            max_overlap = overlap
-            best_sense = sense
+            #lemmatizing the signature
+            if(pre_processing == "lemmatize"):
+                signature = lemmatize(signature)
+            elif(pre_processing == "stem"):
+                signature = stem(signature)
+
+            #computing the overlap between the signature and the context
+            overlap = compute_overlap(signature, context, stop_words, punctuation_counts)
+            #if the new overlap is greater than max overlap then we use this sense as our best sense
+            if(overlap > max_overlap):
+                max_overlap = overlap
+                best_sense = sense
     wsd_result[wsd.id] = best_sense
 
 #wordnet's lesk algorithm
@@ -133,13 +136,13 @@ def wn_lesk(wsd_result, wsd, context):
     wsd_result[wsd.id] = nltk.wsd.lesk(context, lemma)
 
 #Lesk wsd algorithm using most_frequent sense premise
-def lesk(instances, algorithm, pre_processing=None, sw=False, punctuation_counts=True):
+def lesk(instances, algorithm, pre_processing=None, sw=False, punctuation_counts=True, compute_overlap=False):
     wsd_result = {}
     for wsd in instances.values():
         #getting the context as a utf-8 string (not byte sequence))
         context = b" ".join(wsd.context).decode("utf-8").lower()
-        #numbers have lemma @card@ which we don't care about
-        context = re.sub("@card@", "", context)
+        #numbers have lemma @card@ --> but removing it leads to worse performance
+        #context = re.sub("@card@", "", context)
         
         #removing underscores led to greater performance in most_frequent_wsd but worse performance in wn_lesk
         if(algorithm == "most_frequent_wsd"):
@@ -149,7 +152,7 @@ def lesk(instances, algorithm, pre_processing=None, sw=False, punctuation_counts
         if(algorithm == "wn_lesk"):
             wn_lesk(wsd_result, wsd, context)
         elif(algorithm == "most_frequent_wsd"):
-            most_frequent_wsd(wsd_result, wsd, context, pre_processing, sw, punctuation_counts)          
+            most_frequent_wsd(wsd_result, wsd, context, pre_processing, sw, punctuation_counts, compute_overlap)          
     return wsd_result
 
 #method to find the num_words most common lemmas in the semcor corpus
@@ -367,25 +370,24 @@ def supervised_wsd(words=supervised_wsd_lemmas_and_pos, bootstrap=False):
             json.dump(output_dict, fp, indent=2)
 
 #function that will calculate the accuracy based on the predicted synsets
-def get_accuracy(predicted_sysnset, actual_lemmasense):
+def get_accuracy(predicted_synset, actual_lemmasense):
     total_predicted = 0
     total_correct = 0
     num_exceptions = 0
     incorrect_predictions = {}
     correct_predictions = {}
-    for wn_id, synset in predicted_sysnset.items():
+    for wn_id, synset in predicted_synset.items():
         lemmasense_key = actual_lemmasense[wn_id]
         #for each correct lemmasense key for this term we extract the corresponding synset
         for key in lemmasense_key:
-            #synset_from_sense_key(key) throws a WordNetError for some keys
             try:
-                synset_from_lsk = wn.synset_from_sense_key(key)
+                synset_from_lsk = wn.lemma_from_key(key).synset()
             except nltk.corpus.reader.wordnet.WordNetError:
                 num_exceptions += 1
                 print(f"WordNet failed to get synset from key: {key}. Number of exceptions: {num_exceptions}")
                 continue
             
-            both_synsets = f"{str(synset_from_lsk)}, {str(synset)}"
+            both_synsets = f"{str(synset)}, {str(synset_from_lsk)}"
             if(synset_from_lsk == synset):
                 total_correct += 1
                 correct_predictions[both_synsets] = 1 if both_synsets not in correct_predictions else correct_predictions[both_synsets] + 1
@@ -414,16 +416,18 @@ def run_algorithms(instances, keys, algorithms):
         """
         if(algorithm == "most_frequent_wsd"):
             with open("most_frequent_wsd.txt", "w") as fp:
-                punctuation_counts_possibilities = [True]
-                stopword_possibilities = [False]
-                pre_processing_possibilities = ["lemmatize"]
+                punctuation_counts_possibilities = [True, False]
+                stopword_possibilities = [False, True]
+                pre_processing_possibilities = ["lemmatize", "stem", None]
+                compute_overlap = [True, False]
                 for punctuation_count in punctuation_counts_possibilities:
                     for sw in stopword_possibilities:
                         for pp in pre_processing_possibilities:
-                            fp.write(f"#### Running {algorithm} with pre-processing: {pp}, using stopwords: {sw}, counting punctuation as part of overlap: {punctuation_count} ####\n")
-                            wsd_result_no_pp = lesk(instances, algorithm, pre_processing=pp, sw=sw, punctuation_counts=punctuation_count)
-                            accuracy = get_accuracy(wsd_result_no_pp, keys)
-                            fp.write(f"Accuracy for {algorithm} with pre-processing: {pp}, using stopwords: {sw}, counting punctuation as part of overlap: {punctuation_count}: {accuracy}\n\n")
+                            for co in compute_overlap:
+                                fp.write(f"#### Running {algorithm} with pre-processing: {pp}, using stopwords: {sw}, counting punctuation as part of overlap: {punctuation_count}, computing overlap: {co} ####\n")
+                                wsd_result_no_pp = lesk(instances, algorithm, pre_processing=pp, sw=sw, punctuation_counts=punctuation_count, compute_overlap=co)
+                                accuracy = get_accuracy(wsd_result_no_pp, keys)
+                                fp.write(f"Accuracy for {algorithm} with pre-processing: {pp}, using stopwords: {sw}, counting punctuation as part of overlap: {punctuation_count}, computing overlap: {co}: {accuracy}\n\n")
         elif(algorithm == "wn_lesk"):
             """
             Wordnet's Lesk algorithm

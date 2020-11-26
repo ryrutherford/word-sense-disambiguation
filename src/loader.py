@@ -4,7 +4,7 @@
 import xml.etree.cElementTree as ET
 import codecs
 from wsd import run_algorithms
-from nltk.corpus import stopwords
+from nltk.corpus import stopwords, wordnet as wn
 import re
 
 class WSDInstance:
@@ -78,5 +78,5 @@ if __name__ == '__main__':
     test_instances = {k:v for (k,v) in test_instances.items() if k in test_key}
 
     #modify this list to choose which algorithms to run
-    algorithms =  ["MNB", "DT", "wn_lesk", "most_frequent_wsd"]
+    algorithms =  ["most_frequent_wsd", "wn_lesk", "MNB", "DT"]
     run_algorithms(test_instances, test_key, algorithms)
